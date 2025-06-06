@@ -2,9 +2,6 @@ import seaborn as sns
 
 import db_access as dba
 
-# Import data from shared.py
-from shared import df
-
 from shiny import App, render, ui, reactive
 
 app_ui = ui.page_fluid(
