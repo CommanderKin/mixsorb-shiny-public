@@ -30,8 +30,8 @@ def run_query(client, query_text):
         response_df = dataframe_from_result_table(response.primary_results[0])
         # print(response_df)
         return response_df
-    except:
-        print("Query failed")
+    except Exception as e:
+        print(f"Query failed: {e}")
 
 ## TESTING 
 
