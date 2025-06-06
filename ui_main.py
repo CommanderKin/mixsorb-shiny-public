@@ -1,4 +1,4 @@
-from shiny import App, render, ui, reactive
+from shiny import ui
 
 app_ui = ui.page_fluid(
     ui.h2("Connect To DB"),
