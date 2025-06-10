@@ -1,18 +1,22 @@
 from shiny import render, reactive, ui, module
-from ui_main import results_panel
+from ui_main import results_panel_ui
 
 import pandas as pd
 import numpy as np
+
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
 import db_access as dba
 
 def server(input, output, session):
     print("Server started")
 
-    # global variables 
+    # global server variables 
     status_msg = reactive.Value("Waiting for input...") # status message 
     kusto_client = reactive.Value() # reactive value to store databese client
     experiments_list_df = reactive.Value(pd.DataFrame([])) # data frame with the list of experiments pulled from the DB
-    results_tabs = reactive.Value([]) # reacive value that stores all the currently present tabs with exp results
+    results_tabs = reactive.Value([]) # reactive value that stores all the currently present tabs with exp results
 
     #Presss CONNECT TO DB button
     @reactive.Effect
@@ -65,10 +69,11 @@ def server(input, output, session):
     def on_process():
         try:
             new_tab_id = "results_tab_"+ str(len(results_tabs.get()) + 1)
-            new_tab_number = new_tab_id,len(results_tabs.get()) + 1
-            new_tab_content = input.select_exp()
-            updated_tabs = results_tabs.get() + [results_panel(new_tab_id,new_tab_number,new_tab_content)]
+            exp_name = input.select_exp()
+            updated_tabs = results_tabs.get() + [results_panel_ui(new_tab_id,exp_name)]
             results_tabs.set(updated_tabs)
+            client = kusto_client.get()
+            results_panel_server(new_tab_id,client,exp_name)
             reset_reactive_elements()
         except Exception as e:
             status_msg.set(f"Tab creation failed: {e}")
@@ -89,7 +94,7 @@ def server(input, output, session):
                 "' | summarize ts = max(fileCreatedUtc) by fileName | sort by ts desc | limit " + str(np.clip(input.n_exp_field(),1,30))
         else:
             query_text = '| extend baseFileName = extract(@"^(.*?)(?:_\d{3})?\.xml$", 1, fileName)' + \
-            '| where baseFileName contains "' + str(input.search_field()) + '" | summarize ts = max(fileCreatedUtc), fileName = arg_max(fileCreatedUtc, fileName) by baseFileName' + \
+            '| where baseFileName contains "' + str(input.search_field()) + '" | summarize ts = max(fileCreatedUtc) by baseFileName' + \
             '| sort by ts desc | limit ' + str(np.clip(input.n_exp_field(),1,30))
         print(query_text)
         return query_text
@@ -98,9 +103,10 @@ def server(input, output, session):
         try:
             if input.show_seq_checkbox():
                 df.columns = ["File name", "Date/time created"]
+                df["Date/time created"] = df["Date/time created"].apply(lambda x : x.strftime('%x %X')) # 
             else:
-                df.drop(columns = ['fileName'],inplace=True)
-                df.columns = ["Experiment name","Date/time created","Sequence finlename??"]
+                df.columns = ["Experiment name","Date/time created"]
+                df["Date/time created"] = df["Date/time created"].apply(lambda x : x.strftime('%x %X'))
             return df
         except Exception as e:
             print(f"Error cleaning df: {e}")
@@ -122,14 +128,15 @@ def server(input, output, session):
                 ui.card(
                     ui.row(
                         ui.column(1, ui.input_numeric("n_exp_field","N exp:",10, min = 1, max = 30)),
-                        ui.column(3, ui.input_text("search_field","Finelname contains")),
+                        ui.column(3, ui.input_text("search_field","File name contains")),
                         ui.column(2, ui.input_checkbox("show_seq_checkbox","Show individual sequences?")),
                         ui.column(1, ui.input_action_button("run_query_button", "Search", class_="btn btn-primary", disabled=True))
                         )
-                ),
-                ui.row(
-                    ui.column(3,ui.input_select("select_exp","Choose an experiment to process",choices=["Waiting..."])),
-                    ui.column(1, ui.input_action_button("process_button", "Process", class_="btn btn-primary", disabled=True))
+                ),ui.card(
+                    ui.row(
+                        ui.column(3,ui.input_select("select_exp","Choose an experiment to process",choices=["Waiting..."])),
+                        ui.column(1, ui.input_action_button("process_button", "Process", class_="btn btn-primary", disabled=True))
+                    )
                 ),
                 ui.card(ui.output_data_frame("exp_list_table")),
             ),
@@ -150,9 +157,38 @@ def server(input, output, session):
         )
 
 @module.server
-def row_server(input, output, session):
+def results_panel_server(input,output,session, client, exp_name):
+    query_text = "| where fileName == '" + exp_name + ".xml' | limit 100"
+    response_df = dba.run_query(client, query_text)
+    assert isinstance(response_df,pd.DataFrame)
+    # Preliminary clean - will need to make it muich smarter
+    # response_df.dropna(subset=['TCD_VolumeFraction'], axis="index", inplace=True)
+
     @output
     @render.text
-    def text_out():
-        pass
+    def test_msg():
+        return exp_name
+    
+    @output
+    @render.plot(alt = "CO2 vs time")
+    def CO2_vs_time_plot():  
+        time = [float(x) if x != "" else 0 for x in response_df["rel_Time_s"]]
+        CO2 = [float(x) if x != "" else 0 for x in response_df["TCD_VolumeFraction"]]
 
+        fig, ax = plt.subplots()
+        ax.plot(time, CO2)
+        ax.set_title("CO2 vs time")
+        ax.set_xlabel("Relative time, s")
+        ax.set_ylabel("CO2, ppm")
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=5)) # limit number of tick labels
+        ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
+        return fig
+
+
+
+
+
+
+
+
+    
