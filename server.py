@@ -4,6 +4,8 @@ from ui_main import results_panel_ui
 import pandas as pd
 import numpy as np
 
+import shortuuid # to create unique ids of the tabs
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
@@ -16,7 +18,8 @@ def server(input, output, session):
     status_msg = reactive.Value("Waiting for input...") # status message 
     kusto_client = reactive.Value() # reactive value to store databese client
     experiments_list_df = reactive.Value(pd.DataFrame([])) # data frame with the list of experiments pulled from the DB
-    results_tabs = reactive.Value([]) # reactive value that stores all the currently present tabs with exp results
+    results_tabs_dict = reactive.Value({})
+    custom_trigger_value = reactive.Value(0)
 
     #Presss CONNECT TO DB button
     @reactive.Effect
@@ -68,13 +71,17 @@ def server(input, output, session):
     @reactive.event(input.process_button)
     def on_process():
         try:
-            new_tab_id = "results_tab_"+ str(len(results_tabs.get()) + 1)
+            new_tab_id = shortuuid.uuid()
             exp_name = input.select_exp()
-            updated_tabs = results_tabs.get() + [results_panel_ui(new_tab_id,exp_name)]
-            results_tabs.set(updated_tabs)
+            new_tab = results_panel_ui(new_tab_id,exp_name)
+            open_tabs = results_tabs_dict.get().copy() 
+            open_tabs.update({new_tab_id:new_tab})
+            assert isinstance(open_tabs,dict), "Something is wrong - updated tabs is not a dict"
+            results_tabs_dict.set(open_tabs) # update the list that stores the open tabs objects 
             client = kusto_client.get()
-            results_panel_server(new_tab_id,client,exp_name)
-            reset_reactive_elements()
+            results_panel_server(new_tab_id,client,exp_name,results_tabs_dict,new_tab_id,custom_trigger_value)
+            custom_trigger_value.set(custom_trigger_value.get() +1) # update the value to trigger a downstream function
+            print(f"Generated new tab name: {exp_name}: id: {new_tab_id}")
         except Exception as e:
             status_msg.set(f"Tab creation failed: {e}")
 
@@ -99,6 +106,7 @@ def server(input, output, session):
         print(query_text)
         return query_text
     
+
     def clean_response_df(df:pd.DataFrame):
         try:
             if input.show_seq_checkbox():
@@ -114,6 +122,10 @@ def server(input, output, session):
     @output
     @render.ui
     def main_ui():
+        panels_dict = results_tabs_dict.get()
+        assert isinstance(panels_dict, dict), f"panels_dict is not a dict: {panels_dict}"
+        panels = list(panels_dict.values())
+        assert isinstance(panels, list), f"panels is not a list: {panels}"
         return ui.navset_tab(
             ui.nav_panel(
                 "Main",
@@ -140,29 +152,42 @@ def server(input, output, session):
                 ),
                 ui.card(ui.output_data_frame("exp_list_table")),
             ),
-            *[panel for panel in results_tabs.get()],
+            *[x for x in panels],
             id = "main_ui_id"
         )
     
-    # Reset the ui elements after redrawing the ui upon adding a new tab
+    # Reset the ui elements after redrawing the ui upon adding a new tab - runs every time the results_tabs_dict is changed (opening or closing the new tabs)
+    @reactive.Effect 
     def reset_reactive_elements():
-        session.send_input_message("process_button", {"disabled": False})
-        session.send_input_message("run_query_button", {"disabled": False})
-        exp_list =[str(x) for x in experiments_list_df.get().iloc[:,0]]
-        ui.update_select(
-            "select_exp",
-            label = "Choose an experiment to process",
-            choices = exp_list,
-            selected = exp_list[0]
-        )
+        dummy = custom_trigger_value.get() # access the trigger value. This "ties" this function to this value and forces it io run every time it changes
+        if (len(experiments_list_df.get()) > 0 ): # Make sure it only runs when the experiments list is not empty
+            session.send_input_message("process_button", {"disabled": False})
+            session.send_input_message("run_query_button", {"disabled": False})
+            exp_list =[str(x) for x in experiments_list_df.get().iloc[:,0]]
+            ui.update_select(
+                "select_exp",
+                label = "Choose an experiment to process",
+                choices = exp_list,
+                selected = exp_list[0]
+            )
 
 @module.server
-def results_panel_server(input,output,session, client, exp_name):
+def results_panel_server(input,output,session, client, exp_name, open_tabs_dict, custom_id, trigger_value):
     query_text = "| where fileName == '" + exp_name + ".xml' | limit 100"
     response_df = dba.run_query(client, query_text)
     assert isinstance(response_df,pd.DataFrame)
     # Preliminary clean - will need to make it muich smarter
     # response_df.dropna(subset=['TCD_VolumeFraction'], axis="index", inplace=True)
+
+    @reactive.Effect
+    @reactive.event(input.close_tab_button)
+    def on_close_tab():
+        open_tabs = dict(open_tabs_dict.get()) # create a copy - otherwise it will not register that update of reactive value
+        assert isinstance(open_tabs,dict), f"On_close_tab: open_tabs is not a dict: {open_tabs}" 
+        open_tabs.pop(custom_id)
+        #assert isinstance(updated_tabs,dict), f"On_close_tab: updated_tabs is not a dict: {updated_tabs}" 
+        open_tabs_dict.set(open_tabs)
+        trigger_value.set(trigger_value.get()-1)  # update the value to trigger a downstream function
 
     @output
     @render.text
