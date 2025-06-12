@@ -1,5 +1,5 @@
 #DB libs
-from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+from azure.kusto.data import KustoClient, KustoConnectionStringBuilder, ClientRequestProperties
 from azure.kusto.data.helpers import dataframe_from_result_table
 
 ### sample query:
@@ -23,9 +23,10 @@ def connect_to_db():
     except Exception as e:
         print(f"Couldn't connect to DB: {e}")
 
-def run_query(client, query_text):
+def run_query(client:KustoClient, query_text,param_decl):
     try: 
-        query = f"{table} " + query_text
+        query = f"{param_decl} {table} " + query_text
+        print(f"Full query: {query}")
         response = client.execute(database, query)
         response_df = dataframe_from_result_table(response.primary_results[0])
         # print(response_df)

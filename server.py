@@ -44,9 +44,9 @@ def server(input, output, session):
         try: 
             status_msg.set("Running query")
             print("Running query")
-            query_text = build_query()
+            query_text,param_decl = build_query(input.show_seq_checkbox(),input.search_field(),input.n_exp_field())
             client = kusto_client()
-            response_df = dba.run_query(client, query_text)
+            response_df = dba.run_query(client, query_text, param_decl)
             assert isinstance(response_df, pd.DataFrame), "Something went wrong, query data is not a DF"
             response_df = clean_response_df(response_df)
             assert isinstance(response_df, pd.DataFrame), "Something went wrong, query data is not a DF"
@@ -95,16 +95,17 @@ def server(input, output, session):
     def exp_list_table():
         return render.DataGrid(experiments_list_df(), width = 1000)
     
-    def build_query():
-        if input.show_seq_checkbox():
-            query_text = "| where fileName contains '" + str(input.search_field()) + \
-                "' | summarize ts = max(fileCreatedUtc) by fileName | sort by ts desc | limit " + str(np.clip(input.n_exp_field(),1,30))
+    def build_query(show_individual_seq:bool, search_text:str, num_entries:int):
+        param_decl = f"declare query_parameters(param_search_text:string = '{search_text}',param_num_entries:int = {num_entries});"
+
+        if show_individual_seq:
+            query_text = '| where fileName contains param_search_text | summarize ts = max(fileCreatedUtc) by fileName | sort by ts desc | limit param_num_entries'
         else:
             query_text = '| extend baseFileName = extract(@"^(.*?)(?:_\d{3})?\.xml$", 1, fileName)' + \
-            '| where baseFileName contains "' + str(input.search_field()) + '" | summarize ts = max(fileCreatedUtc) by baseFileName' + \
-            '| sort by ts desc | limit ' + str(np.clip(input.n_exp_field(),1,30))
+            '| where baseFileName contains param_search_text | summarize ts = max(fileCreatedUtc) by baseFileName' + \
+            '| sort by ts desc | limit param_num_entries'
         print(query_text)
-        return query_text
+        return query_text, param_decl
     
 
     def clean_response_df(df:pd.DataFrame):
@@ -173,8 +174,13 @@ def server(input, output, session):
 
 @module.server
 def results_panel_server(input,output,session, client, exp_name, open_tabs_dict, custom_id, trigger_value):
-    query_text = "| where fileName == '" + exp_name + ".xml' | limit 100"
-    response_df = dba.run_query(client, query_text)
+    #query_params = dba.ClientRequestProperties()
+    #query_params.set_parameter("param_exp_name",exp_name)
+    
+    param_decl = f"declare query_parameters(param_exp_name:string = '{exp_name}.xml');"
+    query_text = "| where fileName == param_exp_name | limit 100"
+
+    response_df = dba.run_query(client, query_text,param_decl)
     assert isinstance(response_df,pd.DataFrame)
     # Preliminary clean - will need to make it muich smarter
     # response_df.dropna(subset=['TCD_VolumeFraction'], axis="index", inplace=True)
